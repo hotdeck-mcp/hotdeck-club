@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Check, Globe, Brain, Shield, ArrowRight, ChevronDown, Star, Infinity as InfinityIcon } from 'lucide-react'
+import { Check, Globe, Brain, Shield, ArrowRight, ChevronDown, Star, Infinity as InfinityIcon, Loader2 } from 'lucide-react'
+import { checkDeckAvailability, claimDeckName } from './lib/supabase'
 
 const FEATURES = [
   { icon: Brain, label: 'Your AI Journal', desc: 'Every thought, every memory — your deck remembers everything you feed it.' },
@@ -66,17 +67,33 @@ const FAQS = [
   },
 ]
 
-function UsernameChecker() {
+function UsernameChecker({ tier = 'deck' }: { tier?: 'deck' | 'studio' }) {
   const [username, setUsername] = useState('')
-  const [status, setStatus] = useState<'idle' | 'checking' | 'available' | 'taken'>('idle')
+  const [email, setEmail] = useState('')
+  const [status, setStatus] = useState<'idle' | 'checking' | 'available' | 'taken' | 'claiming' | 'claimed' | 'error'>('idle')
+  const [errorMsg, setErrorMsg] = useState('')
+
+  const clean = (v: string) => v.toLowerCase().trim().replace(/[^a-z0-9-]/g, '')
 
   const check = async () => {
-    if (!username.trim()) return
+    const name = clean(username)
+    if (!name) return
+    setUsername(name)
     setStatus('checking')
-    await new Promise(r => setTimeout(r, 800))
-    // Mock availability — in production this hits Freename API
-    const taken = ['bo', 'chad', 'admin', 'hotdeck', 'brandi'].includes(username.toLowerCase())
-    setStatus(taken ? 'taken' : 'available')
+    const result = await checkDeckAvailability(name)
+    setStatus(result)
+  }
+
+  const claim = async () => {
+    if (!email.trim()) return
+    setStatus('claiming')
+    const result = await claimDeckName(clean(username), email, tier)
+    if (result.success) {
+      setStatus('claimed')
+    } else {
+      setErrorMsg(result.error || 'Something went wrong')
+      setStatus('error')
+    }
   }
 
   return (
@@ -103,43 +120,65 @@ function UsernameChecker() {
         </button>
       </div>
 
-      <AnimatePresence>
-        {status !== 'idle' && status !== 'checking' && (
-          <motion.div
-            initial={{ opacity: 0, y: -8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0 }}
-            className={`mt-3 flex items-center gap-2 text-sm font-medium px-4 py-3 rounded-lg ${
-              status === 'available'
-                ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                : 'bg-red-500/10 text-red-400 border border-red-500/20'
-            }`}
-          >
-            {status === 'available' ? (
-              <>
-                <Check className="w-4 h-4" />
-                <span><strong>{username}.deck</strong> is available — claim it before someone else does</span>
-              </>
-            ) : (
-              <>
-                <span>✗</span>
-                <span><strong>{username}.deck</strong> is taken — try another name</span>
-              </>
-            )}
+      <AnimatePresence mode="wait">
+        {status === 'checking' && (
+          <motion.div key="checking" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="mt-3 flex items-center gap-2 text-sm text-white/40 px-2">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            Checking availability...
+          </motion.div>
+        )}
+
+        {(status === 'available' || status === 'claiming') && (
+          <motion.div key="available" initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
+            <div className="mt-3 flex items-center gap-2 text-sm font-medium px-4 py-3 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+              <Check className="w-4 h-4" />
+              <span><strong>{username}.deck</strong> is available — lock it in</span>
+            </div>
+            <div className="mt-3 flex gap-2">
+              <input
+                type="email"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && claim()}
+                placeholder="your@email.com"
+                className="flex-1 card-glass rounded-xl px-4 py-3 text-white text-sm outline-none placeholder-white/20 border border-violet-500/20 focus:border-violet-500/50 transition-colors"
+              />
+              <button
+                onClick={claim}
+                disabled={!email || status === 'claiming'}
+                className="px-5 py-3 deck-glow bg-violet-600 hover:bg-violet-500 disabled:opacity-50 rounded-xl font-bold text-sm transition-colors flex items-center gap-2 whitespace-nowrap"
+              >
+                {status === 'claiming' ? <Loader2 className="w-4 h-4 animate-spin" /> : <><span>Claim it</span><ArrowRight className="w-4 h-4" /></>}
+              </button>
+            </div>
+          </motion.div>
+        )}
+
+        {status === 'claimed' && (
+          <motion.div key="claimed" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }}
+            className="mt-3 px-4 py-4 rounded-xl bg-violet-600/20 border border-violet-500/40 text-center">
+            <div className="text-2xl mb-1">🎉</div>
+            <p className="text-white font-bold">{username}.deck is reserved for you.</p>
+            <p className="text-white/50 text-sm mt-1">You're on the founding member list. We'll email you at launch with your exclusive pricing.</p>
+          </motion.div>
+        )}
+
+        {status === 'taken' && (
+          <motion.div key="taken" initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+            className="mt-3 flex items-center gap-2 text-sm font-medium px-4 py-3 rounded-lg bg-red-500/10 text-red-400 border border-red-500/20">
+            <span>✗</span>
+            <span><strong>{username}.deck</strong> is taken — try another name</span>
+          </motion.div>
+        )}
+
+        {status === 'error' && (
+          <motion.div key="error" initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+            className="mt-3 flex items-center gap-2 text-sm px-4 py-3 rounded-lg bg-red-500/10 text-red-400 border border-red-500/20">
+            <span>⚠️ {errorMsg}</span>
           </motion.div>
         )}
       </AnimatePresence>
-
-      {status === 'available' && (
-        <motion.button
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="mt-4 w-full py-4 deck-glow bg-violet-600 hover:bg-violet-500 rounded-xl font-bold text-lg transition-colors flex items-center justify-center gap-2"
-        >
-          Claim {username}.deck for $99/mo
-          <ArrowRight className="w-5 h-5" />
-        </motion.button>
-      )}
     </div>
   )
 }
